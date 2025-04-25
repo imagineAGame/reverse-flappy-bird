@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+      html, body {
+        -webkit-user-select: none;
+        user-select: none;
+      }
+
+      body {
+        background-color: #111111;
+        color: white;
+        font-family: "Roboto", sans-serif;
+        text-align: center;
+        margin: 0;
+        padding: 0;
+      }
+      
+      #main-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }
+
+      #game-container {
+        display: flex;
+        position: relative;
+        margin-bottom: 40px;
+        border-radius: 10px;
+        max-width: 650px;
+        height: 600px;
+        justify-content: center;
+      }
+
+      canvas {
+        font-family: "Pixelify Sans", sans-serif;
+        touch-action: none; /* Helps prevent scrolling on mobile */
+        max-width: auto;
+        max-height: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="main-wrapper">
+      <div id="main-container">
+        <div id="game-container">
+          <canvas id="gameCanvas"></canvas>
+        </div>
+      </div>
+    </div>
+    <footer>
+      <p>Imagine A Game</p>
+  </footer>
+    <script>
+      /*************************************************************
+       * This version locks the game loop at 60 FPS.
+       * No matter if the device can run at higher refresh rates,
+       * we skip frames so the game logic remains at ~60 FPS.
+       *************************************************************/
+      
+      const canvas = document.getElementById("gameCanvas");
+      const ctx = canvas.getContext("2d");
+      
+      // Canvas dimensions
+      canvas.width = 400;
+      canvas.height = 650
+      ;
+      
+      // Game state
+      let gameStarted = false;
+      let gameOver = false;
+      let score = 0;
+      let bestScore = 0;
+      
+      // We'll track time to limit updates to 60 FPS:
+      let lastFrameTime = 0;
+      const fpsInterval = 1000 / 60; // about 16.67 ms/frame
+      
+      // Gravity/pipe speeds
+      let pipeFallSpeed = 3.3;
+      let pipeSpeed = 2;
+      let lift = -7.5;
+      
+      const pipeGap = 165;
+      const pipeWidth = 80;
+      
+      // Bird + pipe data
+      let bird, pipes;
+      let lifting = false;
+      let liftFrames = 0;
+      
+      // Bird idle oscillation
+      let birdOscillation = 0;
+      const birdOscillationSpeed = 0.08;
+      const birdOscillationAmplitude = 1;
+      
+      // Floor scrolling offset
+      let floorXOffset = 0;
+      
+      // Sprite loading
+      let assetsLoaded = 0;
+      let allSpritesLoaded = false;
+      
+      // Sprites
+      const birdImg       = new Image();
+      const pipeImg       = new Image();
+      const pipeMidImg    = new Image();
+      const bgImg         = new Image();
+      const bgReverseImg  = new Image();
+      const floorImg      = new Image();
+      
+      birdImg.src       = "bird.png";
+      pipeImg.src       = "pipe.png";
+      pipeMidImg.src    = "pipe_middle.png";
+      bgImg.src         = "background.png";
+      bgReverseImg.src  = "background_reverse.png";
+      floorImg.src      = "floor.png";
+      
+      // Audio SFX
+      const hitSFX    = new Audio("hit.mp3");
+      const pointSFX  = new Audio("point.mp3");
+      const swooshBase = new Audio("swoosh.mp3");
+      function playSwoosh() {
+        const s = swooshBase.cloneNode(true);
+        s.currentTime = 0;
+        s.play();
+      }
+      
+      // Music
+      let musicStarted = false;
+      const music = new Audio("music.mp3");
+      music.loop = true;
+      function ensureMusic() {
+        if (!musicStarted) {
+          music.play().catch(err => console.warn("Music play error:", err));
+          musicStarted = true;
+        }
+      }
+      
+      [birdImg, pipeImg, pipeMidImg, bgImg, bgReverseImg, floorImg].forEach(img => {
+        img.onload = () => {
+          assetsLoaded++;
+          if (assetsLoaded === 6) {
+            allSpritesLoaded = true;
+            console.log("All sprites loaded!");
+            initGameScene();
+          }
+        };
+        img.onerror = () => console.error("Failed to load image:", img.src);
+      });
+      
+      // Best score from localStorage
+      if (localStorage.getItem("bestScore")) {
+        bestScore = parseInt(localStorage.getItem("bestScore"), 10) || 0;
+      }
+      
+      // spin effect
+      let spinTime = 0;
+      let spinAngle = 0;
+      let spinDir = 1;
+      let lastSpinScore = -1;
+      function maybeTriggerSpin() {
+        if (score > 0 && score % 5 === 0 && lastSpinScore !== score) {
+          spinTime = 30; // 30 frames => ~0.5s at 60 fps
+          spinAngle = 0;
+          spinDir = Math.random() < 0.5 ? 1 : -1;
+          lastSpinScore = score;
+        }
+      }
+      
+      function getNextPipe() {
+        return pipes.find(pipe => (pipe.x + pipeWidth) > bird.x);
+      }
+      
+      function initGameScene() {
+        gameStarted = false;
+        gameOver = false;
+        score = 0;
+      
+        spinTime = 0;
+        spinAngle = 0;
+        lastSpinScore = -1;
+      
+        pipeFallSpeed = 3.3;
+        lift = -7.5;
+        floorXOffset = 0;
+      
+        pipes = [];
+      
+        bird = {
+          x: canvas.width/2 - 12,
+          y: canvas.height/2,
+          width: birdImg.width,
+          height: birdImg.height
+        };
+      }
+      
+      function startGame() {
+        ensureMusic();
+      
+        gameStarted = true;
+        gameOver = false;
+        score = 0;
+      
+        spinTime = 0;
+        spinAngle = 0;
+        lastSpinScore = -1;
+      
+        pipeFallSpeed = 3.3;
+        lift = -7.5;
+        floorXOffset = 0;
+      
+        pipes = [];
+      
+        bird = {
+          x: canvas.width/2 - 12,
+          y: canvas.height/2,
+          width: birdImg.width,
+          height: birdImg.height
+        };
+      
+        createPipe();
+      }
+      
+      function createPipe() {
+        const min = 0.1;
+        const max = 1.6;
+        const randomVal  = Math.random() * (max - min) + min;
+        const floorH     = floorImg.height || 20;
+        const gapY       = randomVal * (canvas.height - pipeGap - floorH) + 150;
+      
+        pipes.push({
+          x: canvas.width,
+          gapY,
+          scored: false
+        });
+      }
+      
+      function update() {
+        // Bird idle bob
+        birdOscillation += birdOscillationSpeed;
+        bird.y += Math.sin(birdOscillation) * birdOscillationAmplitude;
+      
+        if (!gameStarted || gameOver) return;
+      
+        const nextPipe = getNextPipe();
+      
+        if (lifting && liftFrames > 0 && nextPipe) {
+          nextPipe.gapY += lift;
+          liftFrames--;
+        } else {
+          lifting = false;
+        }
+      
+        // Move pipes
+        pipes.forEach(pipe => {
+          pipe.x -= pipeSpeed;
+        });
+      
+        // Fall logic
+        pipes.forEach(pipe => {
+          if (pipe === nextPipe && liftFrames > 0) {
+            // skip
+          } else {
+            pipe.gapY += pipeFallSpeed;
+          }
+        });
+      
+        // Remove offscreen
+        if (pipes.length && pipes[0].x + pipeWidth < 0) {
+          pipes.shift();
+        }
+      
+        // Make new pipe if needed
+        if (!pipes.length || pipes[pipes.length - 1].x < canvas.width - 245) {
+          createPipe();
+        }
+      
+        // Collisions
+        pipes.forEach(pipe => {
+          const topEdge = pipe.gapY;
+          const bottomEdge = pipe.gapY + pipeGap;
+          if (
+            bird.x < pipe.x + pipeWidth &&
+            bird.x + bird.width - 5 > pipe.x &&
+            (bird.y < topEdge || bird.y + bird.height > bottomEdge)
+          ) {
+            hitSFX.currentTime = 0;
+            hitSFX.play();
+      
+            gameOver = true;
+            if (score > bestScore) {
+              bestScore = score;
+              localStorage.setItem("bestScore", bestScore);
+            }
+          }
+        });
+    
+        // Scoring
+        pipes.forEach(pipe => {
+          if (!pipe.scored && bird.x >= pipe.x + pipeWidth / 2 && !gameOver) {
+            pipe.scored = true;
+            score++;
+            // point SFX
+            pointSFX.currentTime = 0;
+            pointSFX.play();
+    
+            // maybe trigger spin every 5 points
+            maybeTriggerSpin();
+          }
+          // Flip gravity every 3 points
+          if (!pipe.invertedGravity && bird.x >= pipe.x + pipeWidth && !gameOver && score % 3 === 0) {
+            pipe.invertedGravity = true;
+            pipeFallSpeed = -pipeFallSpeed;
+            lift = -lift;
+          }
+        });
+      
+        // Move floor
+        floorXOffset -= pipeSpeed;
+        if (floorXOffset <= -floorImg.width) {
+          floorXOffset += floorImg.width;
+        }
+      }
+      
+      function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+        if (!allSpritesLoaded) {
+          drawLoadingScreen();
+          return;
+        }
+      
+        ctx.save();
+        // spin
+        if (spinTime > 0) {
+          const angleStep = (360 / 30) * (Math.PI / 180);
+          spinAngle += spinDir * angleStep;
+          spinTime--;
+      
+          ctx.translate(canvas.width/2, canvas.height/2);
+          ctx.rotate(spinAngle);
+          ctx.translate(-canvas.width/2, -canvas.height/2);
+        }
+      
+        drawBackgroundCover();
+        drawPipesIfActive();
+        drawFloor();
+        drawBird();
+      
+        ctx.restore();
+      
+        if (gameStarted && !gameOver) {
+          drawScoreAndArrow();
+        }
+      
+        if (gameOver) {
+          drawGameOverOverlay();
+        }
+      }
+      
+      function drawLoadingScreen() {
+        ctx.fillStyle = "white";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "black";
+        ctx.font = "24px 'Pixelify Sans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("Loading sprites...", canvas.width/2, canvas.height/2);
+      }
+      
+      function drawBackgroundCover() {
+        const bgToUse = (pipeFallSpeed < 0) ? bgReverseImg : bgImg;
+        const imgRatio = bgToUse.width / bgToUse.height;
+        const canvasRatio = canvas.width / canvas.height;
+      
+        let renderWidth, renderHeight, offsetX = 0, offsetY = 0;
+      
+        if (imgRatio > canvasRatio) {
+          renderHeight = canvas.height + 30;
+          renderWidth = renderHeight * imgRatio;
+          offsetX = (canvas.width - renderWidth) * 0.5;
+          offsetY = 0;
+        } else {
+          renderWidth = canvas.width;
+          renderHeight = renderWidth / imgRatio;
+          offsetX = 0;
+          offsetY = (canvas.height - renderHeight) * 0.5;
+        }
+        ctx.drawImage(bgToUse, offsetX, offsetY, renderWidth, renderHeight);
+      }
+      
+      function drawPipesIfActive() {
+        if (!gameStarted || !pipes.length) return;
+      
+        pipes.forEach(pipe => {
+          const topPipeY = pipe.gapY;
+          const bottomPipeY = pipe.gapY + pipeGap;
+      
+          ctx.save();
+          ctx.translate(pipe.x + pipeWidth/2, topPipeY);
+          ctx.scale(1, -1);
+          ctx.drawImage(pipeImg, -pipeWidth/2, 0, pipeWidth, pipeImg.height);
+          ctx.drawImage(pipeMidImg, -pipeWidth/2, pipeImg.height, pipeWidth, 2000);
+          ctx.restore();
+      
+          ctx.drawImage(pipeImg, pipe.x, bottomPipeY, pipeWidth, pipeImg.height);
+          ctx.drawImage(pipeMidImg, pipe.x, bottomPipeY + pipeImg.height, pipeWidth, 2000);
+        });
+      }
+      
+      function drawFloor() {
+        const floorY = canvas.height - floorImg.height;
+      
+        ctx.drawImage(floorImg, floorXOffset, floorY);
+        ctx.drawImage(floorImg, floorXOffset + floorImg.width, floorY);
+      }
+      
+      function drawBird() {
+        ctx.drawImage(birdImg, bird.x, bird.y, bird.width, bird.height);
+      }
+      
+      function drawScoreAndArrow() {
+        const yPos = 80;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.font = "48px 'Pixelify Sans', sans-serif";
+      
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = "black";
+        ctx.strokeText(`${score}`, canvas.width / 2, yPos);
+      
+        ctx.fillStyle = "white";
+        ctx.fillText(`${score}`, canvas.width / 2, yPos);
+      
+        ctx.textAlign = "right";
+        const arrow = pipeFallSpeed > 0 ? "↓" : "↑";
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = "black";
+        ctx.strokeText(arrow, canvas.width - 20, yPos);
+      
+        ctx.fillStyle = "white";
+        ctx.fillText(arrow, canvas.width - 20, yPos);
+      }
+      
+      function drawGameOverOverlay() {
+        ctx.save();
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillRect(0,0,canvas.width, canvas.height);
+      
+        const boxW = 320;
+        const boxH = 250;
+        const boxX = canvas.width/2 - boxW/2;
+        const boxY = canvas.height/2 - boxH/2;
+      
+        ctx.fillStyle = "#222";
+        ctx.fillRect(boxX, boxY, boxW, boxH);
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = "white";
+        ctx.strokeRect(boxX, boxY, boxW, boxH);
+      
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.strokeStyle = "black";
+        ctx.fillStyle = "white";
+        ctx.lineWidth = 3;
+      
+        ctx.font = "36px 'Pixelify Sans', sans-serif";
+        ctx.strokeText("GAME OVER", canvas.width/2, boxY + 40);
+        ctx.fillText("GAME OVER", canvas.width/2, boxY + 40);
+      
+        ctx.font = "28px 'Pixelify Sans', sans-serif";
+        ctx.strokeText(`SCORE: ${score}`, canvas.width/2, boxY + 85);
+        ctx.fillText(`SCORE: ${score}`, canvas.width/2, boxY + 85);
+      
+        ctx.strokeText(`BEST: ${bestScore}`, canvas.width/2, boxY + 120);
+        ctx.fillText(`BEST: ${bestScore}`, canvas.width/2, boxY + 120);
+      
+        ctx.font = "20px 'Pixelify Sans', sans-serif";
+        ctx.strokeText("PRESS SPACE OR CLICK", canvas.width/2, boxY + 165);
+        ctx.fillText("PRESS SPACE OR CLICK", canvas.width/2, boxY + 165);
+      
+        ctx.strokeText("TO RESTART", canvas.width/2, boxY + 195);
+        ctx.fillText("TO RESTART", canvas.width/2, boxY + 195);
+      
+        ctx.restore();
+      }
+      
+      // Keydown events (space)
+      document.addEventListener("keydown", e => {
+        if (e.code === "Space") {
+          event.preventDefault(); // Prevents the default scrolling behavior
+          if (gameOver) {
+            initGameScene();
+            return;
+          }
+          if (!gameStarted) {
+            startGame();
+            return;
+          }
+          playSwoosh();
+          lifting = true;
+          liftFrames = 8;
+        }
+      });
+      
+      function userTapOrClick() {
+        if (gameOver) {
+          initGameScene();
+          return;
+        }
+        if (!gameStarted) {
+          startGame();
+          return;
+        }
+        playSwoosh();
+        lifting = true;
+        liftFrames = 8;
+      }
+      
+      canvas.addEventListener("click", userTapOrClick);
+      
+      canvas.addEventListener("touchstart", e => {
+        e.preventDefault();
+        userTapOrClick();
+      });
+      
+      // Lock at ~60 FPS
+      document.addEventListener('DOMContentLoaded', () => {
+        requestAnimationFrame(gameLoop);
+      });
+      
+      function gameLoop(timestamp) {
+        requestAnimationFrame(gameLoop);
+        // Limit to 60 fps
+        const dt = timestamp - lastFrameTime;
+        if (dt >= fpsInterval) {
+          lastFrameTime = timestamp - (dt % fpsInterval);
+      
+          // Each update/draw runs about 60 times/sec
+          update();
+          draw();
+        }
+      }
+    </script>
+  </body>
+</html>
